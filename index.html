@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>3D GPX Map — Strava Style</title>
+  </head>
+  <body>
+    <!-- Drop overlay -->
+    <div id="drop-overlay">
+      <div id="drop-zone">
+        <input type="file" accept=".gpx" id="file-input" />
+        <div class="gpx-icon">🗺️</div>
+        <div class="drop-title">拖入 GPX 文件</div>
+        <div class="drop-sub">或点击选择文件</div>
+      </div>
+      <div class="brand">3D GPX Map · Strava Style</div>
+    </div>
+
+    <!-- Loader -->
+    <div id="loader"><div class="spinner"></div></div>
+
+    <!-- Map -->
+    <div id="map"></div>
+
+    <!-- Track name -->
+    <div id="track-name"></div>
+
+    <!-- Reset -->
+    <button id="reset-btn">↩ 重新加载</button>
+
+    <!-- Map style selector -->
+    <select id="style-select">
+      <option value="dark" selected>🌑 暗色等高线</option>
+      <option value="light">☀ 亮色等高线</option>
+      <option value="satellite">🛰 卫星图像</option>
+    </select>
+
+    <!-- Player controls -->
+    <div id="player">
+      <button id="play-btn" title="沿路线飞行预览 (空格)"></button>
+      <button id="follow-btn" class="active" title="视角跟随">⊙ 跟随</button>
+      <div class="speed-group">
+        <button class="speed-btn active" data-speed="1">1×</button>
+        <button class="speed-btn" data-speed="2">2×</button>
+        <button class="speed-btn" data-speed="4">4×</button>
+      </div>
+    </div>
+
+    <!-- Stats HUD -->
+    <div id="hud">
+      <div class="stat"><div class="stat-value" id="s-dist">—</div><div class="stat-label">距离 km</div></div>
+      <div class="stat"><div class="stat-value" id="s-gain">—</div><div class="stat-label">爬升 m</div></div>
+      <div class="stat"><div class="stat-value" id="s-loss">—</div><div class="stat-label">下降 m</div></div>
+      <div class="stat"><div class="stat-value" id="s-hi">—</div><div class="stat-label">最高点 m</div></div>
+      <div class="stat"><div class="stat-value" id="s-lo">—</div><div class="stat-label">最低点 m</div></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,360 @@
+/* ── Reset ─────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #0d0d0d;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* ── Drop overlay ───────────────────────────────────── */
+#drop-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  background: #0d0d0d;
+  z-index: 100;
+  transition: opacity 0.4s ease;
+}
+#drop-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#drop-zone {
+  position: relative;
+  width: 340px;
+  height: 220px;
+  border: 2px dashed #fc4c02;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#drop-zone.dragover {
+  background: rgba(252, 76, 2, 0.12);
+}
+#drop-zone input[type='file'] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.gpx-icon {
+  font-size: 52px;
+}
+.drop-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+}
+.drop-sub {
+  font-size: 13px;
+  color: #888;
+}
+.brand {
+  font-size: 13px;
+  color: #444;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ── Map ────────────────────────────────────────────── */
+#map {
+  width: 100%;
+  height: 100dvh;
+}
+
+/* ── Stats HUD ──────────────────────────────────────── */
+#hud {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  background: rgba(13, 13, 13, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 14px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s 0.3s ease;
+  white-space: nowrap;
+}
+#hud.visible {
+  opacity: 1;
+}
+
+.stat {
+  padding: 18px 28px;
+  text-align: center;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+.stat:last-child {
+  border-right: none;
+}
+.stat-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: #fc4c02;
+  letter-spacing: -0.02em;
+}
+.stat-label {
+  font-size: 10px;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 2px;
+}
+
+/* ── Track name ─────────────────────────────────────── */
+#track-name {
+  position: fixed;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 15px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(13, 13, 13, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 8px 20px;
+  border-radius: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s 0.3s ease;
+}
+#track-name.visible {
+  opacity: 1;
+}
+
+/* ── Reset button & map style selector ────────────────── */
+.map-ctrl-btn,
+#reset-btn {
+  position: fixed;
+  top: 16px;
+  background: rgba(13, 13, 13, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  cursor: pointer;
+  z-index: 10;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: border-color 0.15s, color 0.15s, opacity 0.4s ease;
+}
+.map-ctrl-btn:hover,
+#reset-btn:hover {
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+
+#reset-btn {
+  right: 28px;
+  opacity: 0;
+  pointer-events: none;
+}
+#reset-btn.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+#style-select {
+  position: fixed;
+  top: 16px;
+  right: 120px;
+  background: rgba(13, 13, 13, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  cursor: pointer;
+  z-index: 10;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  -moz-appearance: none;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  transition: border-color 0.15s, color 0.15s;
+  min-width: 130px;
+}
+#style-select:hover,
+#style-select:focus {
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+#style-select option {
+  background: #1a1a1a;
+  color: #ccc;
+}
+
+/* ── Loader ─────────────────────────────────────────── */
+#loader {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 13, 13, 0.7);
+  z-index: 99;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+#loader.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(252, 76, 2, 0.2);
+  border-top-color: #fc4c02;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Elevation canvas ───────────────────────────────── */
+#elevation-canvas {
+  position: fixed;
+  bottom: 108px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(680px, 90vw);
+  height: 64px;
+  opacity: 0;
+  transition: opacity 0.5s 0.4s ease;
+  pointer-events: none;
+  border-radius: 8px;
+  z-index: 10;
+}
+#elevation-canvas.visible {
+  opacity: 1;
+}
+
+/* ── Player controls ────────────────────────────────── */
+#player {
+  position: fixed;
+  bottom: 188px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s 0.3s ease;
+  z-index: 10;
+}
+#player.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+#play-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #fc4c02;
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 20px rgba(252, 76, 2, 0.5);
+  transition: background 0.2s ease, transform 0.1s ease, box-shadow 0.2s ease;
+  flex-shrink: 0;
+}
+#play-btn:hover {
+  background: #e04100;
+  transform: scale(1.08);
+  box-shadow: 0 6px 24px rgba(252, 76, 2, 0.65);
+}
+#play-btn:active {
+  transform: scale(0.94);
+}
+
+#follow-btn {
+  background: rgba(13, 13, 13, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #888;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+#follow-btn:hover {
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+#follow-btn.active {
+  background: rgba(252, 76, 2, 0.2);
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+
+.speed-group {
+  display: flex;
+  gap: 4px;
+}
+
+.speed-btn {
+  background: rgba(13, 13, 13, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  color: #888;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.speed-btn:hover {
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+.speed-btn.active {
+  background: rgba(252, 76, 2, 0.2);
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
