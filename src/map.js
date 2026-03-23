@@ -166,6 +166,47 @@ export function toggleMapTheme(map) {
 }
 
 /**
+ * Custom MapLibre control: a vertical pitch slider.
+ * Positioned below the NavigationControl (top-left).
+ * Moving the thumb up increases pitch (camera tilts toward horizon).
+ */
+class PitchControl {
+  onAdd(map) {
+    this._map = map;
+
+    this._container = document.createElement('div');
+    this._container.className = 'maplibregl-ctrl pitch-ctrl';
+    this._container.title = '相机仰角';
+
+    this._input = document.createElement('input');
+    this._input.type  = 'range';
+    this._input.min   = '0';
+    this._input.max   = '85';
+    this._input.step  = '1';
+    this._input.value = String(Math.round(map.getPitch()));
+    this._container.appendChild(this._input);
+
+    this._input.addEventListener('input', () => {
+      map.easeTo({ pitch: +this._input.value, duration: 0 });
+    });
+
+    // Keep slider in sync when pitch is changed by other means (flyover, nav-ctrl, etc.)
+    this._onPitch = () => {
+      this._input.value = String(Math.round(map.getPitch()));
+    };
+    map.on('pitch', this._onPitch);
+
+    return this._container;
+  }
+
+  onRemove() {
+    this._map.off('pitch', this._onPitch);
+    this._container.parentNode?.removeChild(this._container);
+    this._map = null;
+  }
+}
+
+/**
  * Initialise MapLibre and return the map instance.
  * @param {string} containerId
  * @returns {maplibregl.Map}
@@ -185,6 +226,7 @@ export function createMap(containerId) {
     new maplibregl.NavigationControl({ visualizePitch: true }),
     'top-left',
   );
+  map.addControl(new PitchControl(), 'top-left');
 
   return map;
 }
@@ -284,9 +326,9 @@ export function renderTrack(map, coords) {
     filter: ['==', ['get', 'role'], 'start'],
     paint: {
       'circle-color': '#2ecc71',
-      'circle-radius': 8,
+      'circle-radius': 5,
       'circle-stroke-color': '#fff',
-      'circle-stroke-width': 2,
+      'circle-stroke-width': 1.5,
     },
   });
 
@@ -298,9 +340,9 @@ export function renderTrack(map, coords) {
     filter: ['==', ['get', 'role'], 'end'],
     paint: {
       'circle-color': '#fc4c02',
-      'circle-radius': 8,
+      'circle-radius': 5,
       'circle-stroke-color': '#fff',
-      'circle-stroke-width': 2,
+      'circle-stroke-width': 1.5,
     },
   });
 
@@ -312,7 +354,7 @@ export function renderTrack(map, coords) {
     [Math.max(...lons), Math.max(...lats)],
   ];
   map.fitBounds(bounds, {
-    padding: { top: 180, bottom: 220, left: 100, right: 100 },
+    padding: { top: 150, bottom: 290, left: 100, right: 100 },
     pitch: 0,
     bearing: 0,
     duration: 1800,

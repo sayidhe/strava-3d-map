@@ -18,6 +18,18 @@ export function showHUD(stats, name) {
   $('reset-btn').classList.add('visible');
 }
 
+/**
+ * Update the numeric HUD values while preserving layout / labels.
+ * @param {{ dist: string, gain: number, loss: number, hi?: number, lo?: number }} stats
+ */
+export function updateHUD(stats) {
+  $('s-dist').textContent = stats.dist;
+  $('s-gain').textContent = stats.gain.toLocaleString();
+  $('s-loss').textContent = stats.loss.toLocaleString();
+  if (typeof stats.hi === 'number') $('s-hi').textContent = stats.hi.toLocaleString();
+  if (typeof stats.lo === 'number') $('s-lo').textContent = stats.lo.toLocaleString();
+}
+
 /** Show loading spinner. */
 export function showLoader() {
   $('loader').classList.add('visible');

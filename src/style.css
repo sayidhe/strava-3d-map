@@ -80,6 +80,7 @@ body {
 #map {
   width: 100%;
   height: 100dvh;
+  background-color: #0d0d0d; /* dark fallback while tiles load; prevents light bleed-through */
 }
 
 /* ── Stats HUD ──────────────────────────────────────── */
@@ -117,6 +118,9 @@ body {
   font-weight: 800;
   color: #fc4c02;
   letter-spacing: -0.02em;
+  font-family: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 .stat-label {
   font-size: 10px;
@@ -151,6 +155,73 @@ body {
 }
 
 /* ── Reset button & map style selector ────────────────── */
+
+/* ── Pitch control ────────────────────────────── */
+.pitch-ctrl {
+  background: rgba(13, 13, 13, 0.75) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  width: 29px;
+  height: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* allow the rotated slider to visually overflow the box */
+  overflow: visible;
+  box-sizing: border-box;
+  box-shadow: none !important;
+}
+
+/* The range input is rotated -90° so:
+   – its original left  (min=0)  becomes the visual bottom
+   – its original right (max=85) becomes the visual top
+   → dragging UP increases pitch (camera tilts toward horizon) */
+.pitch-ctrl input[type='range'] {
+  width: 82px;
+  height: 4px;
+  transform: rotate(-90deg);
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  outline: none;
+  border: none;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+}
+.pitch-ctrl input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+.pitch-ctrl input[type='range']::-moz-range-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+.pitch-ctrl input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fc4c02;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  margin-top: -5px;
+}
+.pitch-ctrl input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fc4c02;
+  border: 2px solid #fff;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
 .map-ctrl-btn,
 #reset-btn {
   position: fixed;
@@ -205,6 +276,22 @@ body {
   outline: none;
   transition: border-color 0.15s, color 0.15s;
   min-width: 130px;
+}
+#record-mode-btn {
+  right: 268px;
+}
+#record-mode-btn.active {
+  background: rgba(252, 76, 2, 0.2);
+  border-color: #fc4c02;
+  color: #fc4c02;
+}
+#record-mode-btn.pending {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+#record-mode-btn.counting {
+  min-width: 58px;
+  text-align: center;
 }
 #style-select:hover,
 #style-select:focus {
@@ -306,6 +393,10 @@ body {
 #play-btn:active {
   transform: scale(0.94);
 }
+#play-btn.armed {
+  background: #a33a11;
+  box-shadow: 0 4px 20px rgba(163, 58, 17, 0.42);
+}
 
 #follow-btn {
   background: rgba(13, 13, 13, 0.75);
@@ -357,4 +448,16 @@ body {
   background: rgba(252, 76, 2, 0.2);
   border-color: #fc4c02;
   color: #fc4c02;
+}
+
+@media (max-width: 768px) {
+  #record-mode-btn {
+    right: 220px;
+  }
+
+  #style-select {
+    right: 68px;
+    min-width: 0;
+    max-width: 140px;
+  }
 }

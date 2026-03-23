@@ -1,23 +1,23 @@
-// ── Constants ─────────────────────────────────────────
-const PITCH = 55;
-const UI_BOTTOM_PX = 220; // height of HUD + player + elevation bar
-const LOOK_AHEAD_FRAC = 0.6; // 6% look-ahead distance for stable bearing
-const TRAIL_MAX_PTS   = 800;
+// ── Camera preset ─────────────────────────────────────
+// All follow-cam parameters are defined here.
+const CAM_PITCH    = 30;   // camera tilt in degrees (0 = top-down, 85 = horizon)
+const CAM_OFFSET_Y = 150;  // px: positive → track dot sits below canvas centre
+                            // (keeps the dot in the lower viewport, above the UI strip)
+const INTRO_MS     = 1200; // follow-cam transition duration (ms)
+const INTRO_MAX_MS = 2100;
+const OUTRO_MS        = 1200;
+const OUTRO_PREP_MS   = 1200;
+const OUTRO_PREP_MAX_MS = 2400;
+const OUTRO_BEAR_BACKTRACK_M = 120;
+const OUTRO_MATCH_SPEED = 6;
+const OUTRO_BEAR_LOCK_START = 0.55;
+const OUTRO_FINAL_BEAR_FREEZE_MS = 800;
+const OUTRO_FINAL_POS_FREEZE_MS = 600;
 
-/**
- * Y-offset (px) so the moving dot sits in the centre of the clear viewport
- * (above the bottom UI strip). Negative = target renders above screen centre.
- *   clearCentre = (h - UI_BOTTOM_PX) / 2  from top
- *   screenCentre = h / 2
- *   offset = -(UI_BOTTOM_PX / 2)
- *
- * Add an extra nudge so the trail ahead has more room – empirically ~40px more
- * negative keeps the dot in the lower-third of the clear area.
- */
-function camOffsetY() {
-  return -Math.round(UI_BOTTOM_PX / 2) + 400; // ≈ +130 px
-}
+// ── Playback / rendering constants ────────────────────
 const BASE_DURATION_MS = 75_000;
+const LOOK_AHEAD_FRAC  = 0.6;
+const TRAIL_MAX_PTS    = 800;
 
 /**
  * Compute flyover zoom from track length.
@@ -60,6 +60,32 @@ function findSeg(dists, d) {
 }
 
 function lerp(a, b, t) { return a + t * (b - a); }
+
+function smoothstep(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+
+function shortestAngleDelta(from, to) {
+  let diff = to - from;
+  if (diff > 180) diff -= 360;
+  if (diff < -180) diff += 360;
+  return diff;
+}
+
+function introDurationMs(fromBearing, toBearing) {
+  const turnDeg = Math.abs(shortestAngleDelta(fromBearing, toBearing));
+  return Math.min(INTRO_MAX_MS, INTRO_MS + turnDeg * 5);
+}
+
+function lowSpeedFactor(speedMult) {
+  return Math.min(Math.max((4 - Math.max(1, speedMult)) / 3, 0), 1);
+}
+
+function outroPrepDurationMs(speedMult) {
+  return lerp(OUTRO_PREP_MS, OUTRO_PREP_MAX_MS, lowSpeedFactor(speedMult));
+}
+
+function outroBearLockStart(speedMult) {
+  return lerp(OUTRO_BEAR_LOCK_START, 0.28, lowSpeedFactor(speedMult));
+}
 
 /**
  * Returns the interpolated position on the track at distance d.
@@ -126,6 +152,10 @@ export class Flyover {
     this.dists = buildCumDists(coords);
     this.totalDist = this.dists[this.dists.length - 1];
     this.zoom = flyZoom(this.totalDist);
+    this._endPos = posAtDist(coords, this.dists, this.totalDist);
+    const endBackDist = Math.max(0, this.totalDist - Math.min(OUTRO_BEAR_BACKTRACK_M, this.totalDist * 0.08));
+    const endBackPos = posAtDist(coords, this.dists, endBackDist);
+    this._endBearing = bearingBetween(endBackPos.lon, endBackPos.lat, this._endPos.lon, this._endPos.lat);
 
     // Smoothed camera position (initialised to track start)
     this._camLon = coords[0][0];
@@ -146,10 +176,15 @@ export class Flyover {
     this._pausedElapsed  = 0;
     this._frameCount     = 0;
     this._intro          = null;
+    this._outro          = null;
+    this._returnView     = null;
+    this._outroBearingLock = null;
+    this._outroFrozenBearing = null;
     this.followCam       = true;
 
-    // Initialise bearing to the first track segment direction
-    const fwd = posAtDist(coords, this.dists, this.totalDist * 0.03);
+    // Initialise bearing to the same look-ahead target used by steady-state
+    // follow-cam. This avoids a visible twist when intro hands off to _tick().
+    const fwd = posAtDist(coords, this.dists, Math.min(this.totalDist * LOOK_AHEAD_FRAC, this.totalDist));
     this._bearing = bearingBetween(coords[0][0], coords[0][1], fwd.lon, fwd.lat);
 
     this._addLayers();
@@ -213,6 +248,7 @@ export class Flyover {
 
   play() {
     if (this.playing) return;
+    this._outro = null;
 
     const isRestart = this.progress >= 1;
     if (isRestart) {
@@ -220,48 +256,139 @@ export class Flyover {
       this.progress = 0;
       this._camLon = this.coords[0][0];
       this._camLat = this.coords[0][1];
+      this._returnView = null;
     }
+    this._outroBearingLock = null;
+    this._outroFrozenBearing = null;
 
     this.playing = true;
-
-    // Snapshot current map camera so we can blend from it inside the tick loop
-    const cam = this.map.getFreeCameraOptions ? this.map.getFreeCameraOptions() : null;
-    const curCenter  = this.map.getCenter();
-    const curBearing = this.map.getBearing();
-    const curPitch   = this.map.getPitch();
-    const curZoom    = this.map.getZoom();
+    this.map.stop();
 
     const resuming = !isRestart && this._pausedElapsed > 0;
-    this._intro = (resuming || !this.followCam) ? null : {
-      fromLon:     curCenter.lng,
-      fromLat:     curCenter.lat,
-      fromBearing: curBearing,
-      fromPitch:   curPitch,
-      fromZoom:    curZoom,
-      durationMs:  1400,
-      startedAt:   performance.now(),
-    };
+    if (this.followCam && !resuming) {
+      // Capture the geographic point currently shown at the *offset position*
+      // [w/2, h/2+CAM_OFFSET_Y] so we can keep offset constant (= CAM_OFFSET_Y)
+      // for the whole intro. That means only center/bearing/pitch/zoom animate —
+      // the track dot moves smoothly with no offset jump.
+      const mapEl  = this.map.getContainer();
+      const fromPt = this.map.unproject([
+        mapEl.clientWidth  / 2,
+        mapEl.clientHeight / 2 + CAM_OFFSET_Y,
+      ]);
+      this._intro = {
+        fromLon:     fromPt.lng,
+        fromLat:     fromPt.lat,
+        fromBearing: this.map.getBearing(),
+        fromPitch:   this.map.getPitch(),
+        fromZoom:    this.map.getZoom(),
+        durationMs:  introDurationMs(this.map.getBearing(), this._bearing),
+        startedAt:   performance.now(),
+      };
+      this._returnView = {
+        toLon:       this._intro.fromLon,
+        toLat:       this._intro.fromLat,
+        toBearing:   this._intro.fromBearing,
+        toPitch:     this._intro.fromPitch,
+        toZoom:      this._intro.fromZoom,
+        durationMs:  this._intro.durationMs,
+      };
+    } else {
+      this._intro = null;
+      if (!resuming) this._returnView = null;
+    }
 
     this._startTime = performance.now() - this._pausedElapsed;
+    // If there's an intro transition, freeze the playback clock until it
+    // finishes — the track shouldn't race ahead while the camera is still
+    // flying in from a distant view.
+    if (this._intro) this._startTime = null;
     this._tick();
+  }
+
+  /**
+   * Snap camera back to the follow-cam position with a smooth transition.
+   * Both paths use the exact same easeTo({duration:0}) + ramp pattern as
+   * _tick(), so the final camera state is guaranteed bit-identical.
+   */
+  snapToFollow() {
+    this.map.stop();
+    // Sample the geographic point at the offset screen position so that
+    // offset stays constant (= CAM_OFFSET_Y) for the whole transition.
+    // Only center/bearing/pitch/zoom animate — same approach as play() intro.
+    const mapEl  = this.map.getContainer();
+    const fromPt = this.map.unproject([
+      mapEl.clientWidth  / 2,
+      mapEl.clientHeight / 2 + CAM_OFFSET_Y,
+    ]);
+    const fromLon     = fromPt.lng;
+    const fromLat     = fromPt.lat;
+    const fromBearing = this.map.getBearing();
+    const fromPitch   = this.map.getPitch();
+    const fromZoom    = this.map.getZoom();
+
+    if (this.playing) {
+      // _tick is running — inject an intro and let _tick animate it.
+      this._intro = {
+        fromLon, fromLat, fromBearing, fromPitch, fromZoom,
+        durationMs: introDurationMs(fromBearing, this._bearing),
+        startedAt:  performance.now(),
+      };
+      return;
+    }
+
+    // Not playing: run the same per-frame easeTo({duration:0}) loop that
+    // _tick uses, so the final camera state is bit-identical to steady state.
+    const startedAt = performance.now();
+    const durationMs = introDurationMs(fromBearing, this._bearing);
+    const animate = () => {
+      const t0 = Math.min((performance.now() - startedAt) / durationMs, 1);
+      const t  = smoothstep(t0);
+
+      let bDiff = this._bearing - fromBearing;
+      if (bDiff >  180) bDiff -= 360;
+      if (bDiff < -180) bDiff += 360;
+
+      this.map.easeTo({
+        center:   [fromLon + (this._camLon - fromLon) * t,
+                   fromLat + (this._camLat - fromLat) * t],
+        bearing:  (fromBearing + bDiff * t + 360) % 360,
+        pitch:    fromPitch + (CAM_PITCH - fromPitch) * t,
+        zoom:     fromZoom  + (this.zoom  - fromZoom)  * t,
+        offset:   [0, CAM_OFFSET_Y], // constant throughout
+        duration: 0,
+      });
+
+      if (t0 < 1) requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
   }
 
   pause() {
     if (!this.playing) return;
     this.playing = false;
-    this._pausedElapsed = performance.now() - this._startTime;
+    // _startTime is null when paused during the opening intro
+    this._pausedElapsed = this._startTime !== null
+      ? performance.now() - this._startTime
+      : 0;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
     this._intro = null;
+    this._outro = null;
+    this._returnView = null;
+    this._outroBearingLock = null;
+    this._outroFrozenBearing = null;
+    this._startTime = null;
   }
 
   /** Change playback speed without losing current position. */
   setSpeed(mult) {
-    const wasPlaying = this.playing;
-    if (wasPlaying) this.pause();
+    // Re-anchor elapsed time so current progress is preserved at new speed
     this._pausedElapsed = this.progress * (this.baseDuration / mult);
     this.speedMult = mult;
-    if (wasPlaying) this.play();
+    if (this.playing) {
+      // Reset the clock so _tick's elapsed calculation uses new duration
+      this._startTime = performance.now() - this._pausedElapsed;
+    }
   }
 
   /** Stop and tear down all flyover layers. */
@@ -270,6 +397,10 @@ export class Flyover {
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
     this._intro = null;
+    this._outro = null;
+    this._returnView = null;
+    this._outroBearingLock = null;
+    this._outroFrozenBearing = null;
     this._removeLayers();
     this._setBaseOpacity(0.95, 0.16);
   }
@@ -277,56 +408,158 @@ export class Flyover {
   // ── Animation loop ───────────────────────────────────
 
   _tick() {
-    if (!this.playing) return;
+    if (!this.playing) {
+      if (this._outro) {
+        const now = performance.now();
+        const t0 = Math.min((now - this._outro.startedAt) / this._outro.durationMs, 1);
+        const t = smoothstep(t0);
+        const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, toLon, toLat, toBearing, toPitch, toZoom } = this._outro;
+        const bDiff = shortestAngleDelta(fromBearing, toBearing);
+        this.map.easeTo({
+          center:   [fromLon + (toLon - fromLon) * t,
+                     fromLat + (toLat - fromLat) * t],
+          bearing:  (fromBearing + bDiff * t + 360) % 360,
+          pitch:    fromPitch + (toPitch - fromPitch) * t,
+          zoom:     fromZoom + (toZoom - fromZoom) * t,
+          offset:   [0, CAM_OFFSET_Y],
+          duration: 0,
+        });
+        if (t0 < 1) {
+          this._raf = requestAnimationFrame(() => this._tick());
+          return;
+        }
+        this._outro = null;
+        this.map.stop();
+        window.dispatchEvent(new CustomEvent('flyover:ended', {
+          detail: { restoredView: this._returnView !== null },
+        }));
+      }
+      return;
+    }
 
     const now     = performance.now();
+
+    // While the opening intro is playing, hold progress at 0 so the track
+    // doesn't advance until the camera has finished flying in.
+    if (this._startTime === null) {
+      // Check if intro finished this frame
+      if (this._intro) {
+        const t0 = (now - this._intro.startedAt) / this._intro.durationMs;
+        if (t0 < 1) {
+          // Still in intro — just render the camera blend and schedule next tick
+          const t = smoothstep(t0);
+          const { fromLon, fromLat, fromBearing, fromPitch, fromZoom } = this._intro;
+          const bDiff = shortestAngleDelta(fromBearing, this._bearing);
+          this.map.easeTo({
+            center:  [fromLon + (this._camLon - fromLon) * t,
+                      fromLat + (this._camLat - fromLat) * t],
+            bearing: (fromBearing + bDiff * t + 360) % 360,
+            pitch:   fromPitch + (CAM_PITCH - fromPitch) * t,
+            zoom:    fromZoom  + (this.zoom  - fromZoom)  * t,
+            offset:  [0, CAM_OFFSET_Y],
+            duration: 0,
+          });
+          this._raf = requestAnimationFrame(() => this._tick());
+          return;
+        }
+      }
+      // Intro done — start the playback clock from now
+      this._intro = null;
+      this._startTime = now - this._pausedElapsed;
+    }
+
     const elapsed = now - this._startTime;
     this.progress = Math.min(elapsed / this._duration, 1);
 
     const d   = this.progress * this.totalDist;
     const pos = posAtDist(this.coords, this.dists, d);
+    const speedSmooth = Math.max(1, this.speedMult);
+    const prepDuration = outroPrepDurationMs(speedSmooth);
+    const bearLockStart = outroBearLockStart(speedSmooth);
+    const remainingMs = Math.max(this._duration - elapsed, 0);
+    const outroPrepStart = Math.max(0, this._duration - prepDuration);
+    const outroPrepT0 = this._duration > 0 && elapsed > outroPrepStart
+      ? Math.min((elapsed - outroPrepStart) / Math.max(prepDuration, 1), 1)
+      : 0;
+    const outroPrepT = smoothstep(outroPrepT0);
+    const outroBearLockT0 = outroPrepT0 > bearLockStart
+      ? (outroPrepT0 - bearLockStart) / (1 - bearLockStart)
+      : 0;
+    const outroBearLockT = smoothstep(Math.min(Math.max(outroBearLockT0, 0), 1));
+
+    // Speed-adaptive smoothing: at higher multipliers each frame covers more
+    // distance, so we reduce the per-frame factor proportionally to maintain
+    // consistent temporal smoothness and suppress GPS-noise jitter.
+    const outroSmooth = Math.max(speedSmooth, OUTRO_MATCH_SPEED);
+    const currentPosFac  = 0.2  / speedSmooth;
+    const currentBearFac = 0.07 / speedSmooth;
+    const stablePosFac   = 0.2  / outroSmooth;
+    const stableBearFac  = 0.07 / outroSmooth;
+    const lowSpeedT = lowSpeedFactor(speedSmooth);
+    const posFac  = lerp(currentPosFac, stablePosFac, smoothstep(Math.min(outroPrepT + lowSpeedT * 0.18, 1)));   // position low-pass
+    const bearFac = lerp(currentBearFac, stableBearFac, smoothstep(Math.min(outroPrepT + lowSpeedT * 0.24, 1))); // bearing low-pass
+
+    // Smooth camera position to absorb GPS noise (critical at 4×+)
+    const posTargetBlend = smoothstep(Math.min(outroPrepT * (1.15 + lowSpeedT * 0.45), 1));
+    const bearTargetBlend = smoothstep(Math.min(outroPrepT * (1.35 + lowSpeedT * 0.7), 1));
+    const useFrozenPos = remainingMs <= OUTRO_FINAL_POS_FREEZE_MS;
+    const targetLon = useFrozenPos ? this._endPos.lon : lerp(pos.lon, this._endPos.lon, posTargetBlend);
+    const targetLat = useFrozenPos ? this._endPos.lat : lerp(pos.lat, this._endPos.lat, posTargetBlend);
+    this._camLon += (targetLon - this._camLon) * posFac;
+    this._camLat += (targetLat - this._camLat) * posFac;
 
     // Look-ahead bearing
     const aD    = Math.min(d + this.totalDist * LOOK_AHEAD_FRAC, this.totalDist);
     const ahead = posAtDist(this.coords, this.dists, aD);
     const tBear = bearingBetween(pos.lon, pos.lat, ahead.lon, ahead.lat);
 
-    let diff = tBear - this._bearing;
-    if (diff >  180) diff -= 360;
-    if (diff < -180) diff += 360;
-    this._bearing = (this._bearing + diff * 0.07 + 360) % 360;
+    const liveTargetBearing = (this._endBearing + shortestAngleDelta(this._endBearing, tBear) * (1 - bearTargetBlend) + 360) % 360;
+    if (remainingMs > OUTRO_FINAL_BEAR_FREEZE_MS) {
+      this._outroFrozenBearing = null;
+    } else if (this._outroFrozenBearing === null) {
+      this._outroFrozenBearing = liveTargetBearing;
+    }
+    const frozenAwareBearing = this._outroFrozenBearing ?? liveTargetBearing;
+    if (outroBearLockT0 <= 0) {
+      this._outroBearingLock = null;
+    } else if (this._outroBearingLock === null) {
+      this._outroBearingLock = frozenAwareBearing;
+    }
+    const targetBearing = this._outroBearingLock === null
+      ? frozenAwareBearing
+      : (this._outroBearingLock + shortestAngleDelta(this._outroBearingLock, this._endBearing) * outroBearLockT + 360) % 360;
+    let diff = shortestAngleDelta(this._bearing, targetBearing);
+    this._bearing = (this._bearing + diff * bearFac + 360) % 360;
 
-    // ── Intro blend: interpolate from snapshot → target camera ──────────
-    let centerLon = pos.lon;
-    let centerLat = pos.lat;
+    // ── Intro blend: interpolate from snapshot → follow-cam target ───────
+    let centerLon = this._camLon;
+    let centerLat = this._camLat;
     let bearing   = this._bearing;
-    let pitch     = PITCH;
+    let pitch     = CAM_PITCH;
     let zoom      = this.zoom;
-    let offsetY   = camOffsetY();
+    let offsetY   = CAM_OFFSET_Y;
 
     if (this._intro) {
       const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, durationMs, startedAt } = this._intro;
       const t0 = Math.min((now - startedAt) / durationMs, 1);
-      // ease-out cubic
-      const t  = 1 - Math.pow(1 - t0, 3);
+      const t  = smoothstep(t0); // smoothstep: zero velocity at both ends
 
-      // Shortest-path bearing interpolation
-      let bDiff = this._bearing - fromBearing;
-      if (bDiff >  180) bDiff -= 360;
-      if (bDiff < -180) bDiff += 360;
+      const bDiff = shortestAngleDelta(fromBearing, this._bearing);
 
-      centerLon = fromLon + (pos.lon - fromLon) * t;
-      centerLat = fromLat + (pos.lat - fromLat) * t;
+      centerLon = fromLon  + (this._camLon  - fromLon)  * t;
+      centerLat = fromLat  + (this._camLat  - fromLat)  * t;
       bearing   = (fromBearing + bDiff * t + 360) % 360;
-      pitch     = fromPitch   + (PITCH      - fromPitch)   * t;
-      zoom      = fromZoom    + (this.zoom  - fromZoom)    * t;
-      // Interpolate offset 0 → final so dot doesn't jump on intro
-      offsetY   = camOffsetY() * t;
+      pitch     = fromPitch + (CAM_PITCH  - fromPitch)  * t;
+      zoom      = fromZoom  + (this.zoom   - fromZoom)   * t;
+      // offset stays constant — fromLon/fromLat was sampled at the offset
+      // screen position so the track dot moves smoothly with no jump.
 
-      if (t0 >= 1) this._intro = null;  // intro done
+      if (t0 >= 1) this._intro = null;
     }
 
     if (this.followCam) {
+      // In steady state (no intro) this call uses _camTarget() values exactly,
+      // which is also what snapToFollow() targets — guaranteed identical result.
       this.map.easeTo({ center: [centerLon, centerLat], bearing, pitch, zoom, offset: [0, offsetY], duration: 0 });
     }
 
@@ -344,7 +577,31 @@ export class Flyover {
     } else {
       this.playing = false;
       this._setBaseOpacity(0.95, 0.16);
-      window.dispatchEvent(new CustomEvent('flyover:ended'));
+      this.map.getSource(SRC_TRAIL)?.setData(trailGeoJSON(this.coords, this.coords.length - 1));
+      this.map.getSource(SRC_HEAD)?.setData(headGeoJSON(this._endPos.lon, this._endPos.lat));
+      const fromCenter = this.followCam
+        ? { lng: centerLon, lat: centerLat }
+        : this.map.getCenter();
+      const fromBearing = this.followCam ? bearing : this.map.getBearing();
+      const fromPitch = this.followCam ? pitch : this.map.getPitch();
+      const fromZoom = this.followCam ? zoom : this.map.getZoom();
+      const returnView = this.followCam ? this._returnView : null;
+      this.map.stop();
+      this._outro = {
+        fromLon:     fromCenter.lng,
+        fromLat:     fromCenter.lat,
+        fromBearing,
+        fromPitch,
+        fromZoom,
+        toLon:       returnView ? returnView.toLon : this._endPos.lon,
+        toLat:       returnView ? returnView.toLat : this._endPos.lat,
+        toBearing:   returnView ? returnView.toBearing : 0,
+        toPitch:     returnView ? returnView.toPitch : 0,
+        toZoom:      returnView ? returnView.toZoom : this.zoom,
+        durationMs:  returnView ? returnView.durationMs : OUTRO_MS,
+        startedAt:   performance.now(),
+      };
+      this._raf = requestAnimationFrame(() => this._tick());
     }
   }
 }
