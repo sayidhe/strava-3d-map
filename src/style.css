@@ -246,7 +246,7 @@ body {
 }
 
 #reset-btn {
-  right: 28px;
+  right: 16px;
   opacity: 0;
   pointer-events: none;
 }
@@ -255,30 +255,11 @@ body {
   pointer-events: all;
 }
 
-#style-select {
-  position: fixed;
-  top: 16px;
-  right: 120px;
-  background: rgba(13, 13, 13, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
-  color: #ccc;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 6px 12px;
-  cursor: pointer;
-  z-index: 10;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  -moz-appearance: none;
-  appearance: none;
-  -webkit-appearance: none;
-  outline: none;
-  transition: border-color 0.15s, color 0.15s;
-  min-width: 130px;
+#map-style-btn {
+  right: 118px;
 }
 #record-mode-btn {
-  right: 268px;
+  right: 220px;
 }
 #record-mode-btn.active {
   background: rgba(252, 76, 2, 0.2);
@@ -293,16 +274,6 @@ body {
   min-width: 58px;
   text-align: center;
 }
-#style-select:hover,
-#style-select:focus {
-  border-color: #fc4c02;
-  color: #fc4c02;
-}
-#style-select option {
-  background: #1a1a1a;
-  color: #ccc;
-}
-
 /* ── Loader ─────────────────────────────────────────── */
 #loader {
   position: fixed;
@@ -452,12 +423,9 @@ body {
 
 @media (max-width: 768px) {
   #record-mode-btn {
-    right: 220px;
+    right: 162px;
   }
-
-  #style-select {
+  #map-style-btn {
     right: 68px;
-    min-width: 0;
-    max-width: 140px;
   }
 }

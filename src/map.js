@@ -1,5 +1,11 @@
 import maplibregl from 'maplibre-gl';
 
+const MAPTILER_API_KEY      = import.meta.env.VITE_MAPTILER_API_KEY;
+const MAPTILER_OUTDOOR_URL      = `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MAPTILER_API_KEY}`;
+const MAPTILER_SATELLITE_TILES  = `https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${MAPTILER_API_KEY}`;
+
+let _currentStyle = 'outdoor'; // 'outdoor' | 'satellite'
+
 /** Compute a camera bearing that points roughly along the track. */
 export function trackBearing(coords) {
   if (coords.length < 2) return 0;
@@ -10,159 +16,47 @@ export function trackBearing(coords) {
 }
 
 /**
- * Outdoor topo style: OpenTopoMap (contour lines, hillshade baked in, trail markings)
- * + a single DEM source used only for 3-D terrain extrusion.
- * No separate hillshade layer — OpenTopoMap already contains it, adding another
- * hillshade pass causes ghost/double-image artifacts and white edges on water bodies.
- *
- * @param {'dark'|'light'} theme
+ * Recursively replace language-specific name references in a MapLibre expression.
+ * Converts `["get", "name:xx"]` → `["coalesce", ["get", "name:zh"], ["get", "name"]]`
+ * and plain strings like `"{name:en}"` → `"{name:zh}"`.
  */
-function buildStyle(theme = 'dark') {
-  const isDark = theme === 'dark';
-  return {
-    version: 8,
-    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
-    sources: {
-      // Outdoor topo raster — hillshade already baked in
-      topo: {
-        type: 'raster',
-        tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
-        tileSize: 256,
-        maxzoom: 17,
-        attribution:
-          '© <a href="https://opentopomap.org">OpenTopoMap</a> · © OpenStreetMap contributors',
-      },
-      // DEM used exclusively for 3-D terrain extrusion
-      'dem-terrain': {
-        type: 'raster-dem',
-        tiles: [
-          'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
-        ],
-        tileSize: 256,
-        maxzoom: 15,
-        encoding: 'terrarium',
-        attribution: '© Mapzen · USGS · SRTM',
-      },
-    },
-    terrain: {
-      source: 'dem-terrain',
-      exaggeration: 1.1,
-    },
-    layers: [
-      // Topo base
-      {
-        id: 'topo-layer',
-        type: 'raster',
-        source: 'topo',
-        paint: isDark ? {
-          'raster-opacity': 0.72,
-          'raster-brightness-min': 0.0,
-          'raster-brightness-max': 0.55,
-          'raster-saturation': -0.35,
-          'raster-contrast': 0.1,
-        } : {
-          'raster-opacity': 1.0,
-          'raster-brightness-min': 0.05,
-          'raster-brightness-max': 1.0,
-          'raster-saturation': -0.1,
-          'raster-contrast': 0.05,
-        },
-      },
-      // Dark overlay (dark theme only)
-      ...( isDark ? [{
-        id: 'dark-overlay',
-        type: 'background',
-        paint: {
-          'background-color': '#0d0d0d',
-          'background-opacity': 0.38,
-        },
-      }] : []),
-    ],
-  };
+function _swapLang(expr) {
+  if (Array.isArray(expr)) {
+    if (expr[0] === 'get' && typeof expr[1] === 'string' && /^name:[a-z_-]+$/i.test(expr[1])) {
+      return ['coalesce', ['get', 'name:zh'], ['get', 'name']];
+    }
+    return expr.map(_swapLang);
+  }
+  if (typeof expr === 'string') {
+    return expr.replace(/\{name:[^}]+\}/g, '{name:zh}');
+  }
+  return expr;
 }
 
-let _currentTheme = 'dark';
-
-// Paint configs keyed by style id
-const STYLE_CONFIGS = {
-  dark: {
-    rasterOpacity: 0.72, brightnessMin: 0.0, brightnessMax: 0.55,
-    saturation: -0.35, contrast: 0.1, darkOverlay: true,
-  },
-  light: {
-    rasterOpacity: 1.0, brightnessMin: 0.05, brightnessMax: 1.0,
-    saturation: -0.1, contrast: 0.05, darkOverlay: false,
-  },
-  satellite: null, // satellite uses a different source — handled separately
-};
+/** Apply Chinese labels to all symbol layers of a loaded vector style. */
+function _applyChineseLabels(map) {
+  const style = map.getStyle();
+  if (!style) return;
+  style.layers.forEach((layer) => {
+    if (layer.type !== 'symbol') return;
+    const textField = map.getLayoutProperty(layer.id, 'text-field');
+    if (!textField) return;
+    const updated = _swapLang(textField);
+    map.setLayoutProperty(layer.id, 'text-field', updated);
+  });
+}
 
 /**
- * Switch to a named map style: 'dark' | 'light' | 'satellite'.
- * Uses setPaintProperty to avoid full setStyle rebuilds.
+ * Toggle between outdoor and satellite map styles.
+ * Satellite tiles are overlaid on the outdoor vector style — no setStyle() call,
+ * so GPX and flyover layers are never wiped.
  * @param {maplibregl.Map} map
- * @param {'dark'|'light'|'satellite'} styleId
- * @returns {'dark'|'light'|'satellite'}
+ * @returns {'outdoor'|'satellite'}
  */
-export function setMapStyle(map, styleId) {
-  const prev = _currentTheme;
-  _currentTheme = styleId;
-
-  const enterSat  = styleId === 'satellite';
-  const leaveSat  = prev === 'satellite';
-
-  if (enterSat) {
-    // Hide topo, show satellite
-    if (map.getLayer('topo-layer'))      map.setLayoutProperty('topo-layer', 'visibility', 'none');
-    if (map.getLayer('dark-overlay'))    map.removeLayer('dark-overlay');
-    if (!map.getSource('satellite')) {
-      map.addSource('satellite', {
-        type: 'raster',
-        tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-        tileSize: 256, maxzoom: 19,
-        attribution: '© Esri · Maxar · Earthstar Geographics',
-      });
-    }
-    if (!map.getLayer('satellite-layer')) {
-      map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'satellite',
-        paint: { 'raster-opacity': 1 } }, 'topo-layer');
-    } else {
-      map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
-    }
-  } else {
-    // Show topo, hide satellite
-    if (map.getLayer('satellite-layer')) map.setLayoutProperty('satellite-layer', 'visibility', 'none');
-    if (map.getLayer('topo-layer'))      map.setLayoutProperty('topo-layer', 'visibility', 'visible');
-
-    const cfg = STYLE_CONFIGS[styleId];
-    map.setPaintProperty('topo-layer', 'raster-opacity',        cfg.rasterOpacity);
-    map.setPaintProperty('topo-layer', 'raster-brightness-min', cfg.brightnessMin);
-    map.setPaintProperty('topo-layer', 'raster-brightness-max', cfg.brightnessMax);
-    map.setPaintProperty('topo-layer', 'raster-saturation',     cfg.saturation);
-    map.setPaintProperty('topo-layer', 'raster-contrast',       cfg.contrast);
-
-    if (cfg.darkOverlay) {
-      if (!map.getLayer('dark-overlay')) {
-        map.addLayer({ id: 'dark-overlay', type: 'background',
-          paint: { 'background-color': '#0d0d0d', 'background-opacity': 0.38 } }, 'topo-layer');
-      }
-    } else {
-      if (map.getLayer('dark-overlay')) map.removeLayer('dark-overlay');
-    }
-  }
-
-  // Track gradient: use high-contrast colours for satellite & light
-  const useLightGradient = styleId === 'light' || styleId === 'satellite';
-  if (map.getLayer('gpx-track')) {
-    map.setPaintProperty('gpx-track', 'line-gradient', useLightGradient ? GRADIENT_LIGHT : GRADIENT_DARK);
-  }
-
-  return _currentTheme;
-}
-
-/** @deprecated use setMapStyle */
-export function toggleMapTheme(map) {
-  const next = _currentTheme === 'dark' ? 'light' : 'dark';
-  return setMapStyle(map, next);
+export function toggleMapStyle(map) {
+  _currentStyle = _currentStyle === 'outdoor' ? 'satellite' : 'outdoor';
+  map.setPaintProperty('satellite-layer', 'raster-opacity', _currentStyle === 'satellite' ? 1 : 0);
+  return _currentStyle;
 }
 
 /**
@@ -214,14 +108,66 @@ class PitchControl {
 export function createMap(containerId) {
   const map = new maplibregl.Map({
     container: containerId,
-    style: buildStyle(),
+    style: MAPTILER_OUTDOOR_URL,
     center: [104, 35],
     zoom: 4,
     pitch: 40,
     bearing: -20,
     antialias: true,
+    // Large cache so tiles loaded during a flyover stay resident for replays.
+    maxTileCacheSize: 1000,
   });
 
+  map.once('style.load', () => {
+    _applyChineseLabels(map);
+
+    // --- Terrain DEM source ---
+    map.addSource('terrain-dem', {
+      type: 'raster-dem',
+      url: 'https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=' + MAPTILER_API_KEY,
+      tileSize: 256,
+      maxzoom: 13,
+      attribution: '\u00a9 MapTiler',
+    });
+    map.setTerrain({ source: 'terrain-dem', exaggeration: 1.0 });
+
+    // --- Hillshade DEM source ---
+    map.addSource('hillshade-dem', {
+      type: 'raster-dem',
+      url: 'https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=' + MAPTILER_API_KEY,
+      tileSize: 256,
+      maxzoom: 13,
+      attribution: '\u00a9 MapTiler',
+    });
+
+
+    // 添加 satellite source 和 layer（只添加一次）
+    if (!map.getSource('maptiler-satellite')) {
+      map.addSource('maptiler-satellite', {
+        type: 'raster',
+        tiles: [MAPTILER_SATELLITE_TILES],
+        tileSize: 256,
+        maxzoom: 20,
+        attribution: '\u00a9 MapTiler \u00a9 Maxar',
+      });
+    }
+    if (!map.getLayer('satellite-layer')) {
+      map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'maptiler-satellite',
+        // fade-duration:0 — tiles appear instantly, eliminating mid-animation flicker.
+        paint: { 'raster-opacity': 0, 'raster-fade-duration': 0 } });
+    }
+
+    // 添加 hillshade 图层（不指定 before，默认加到最上层）
+    if (!map.getLayer('custom-hillshade')) {
+      map.addLayer({
+        id: 'custom-hillshade',
+        type: 'hillshade',
+        source: 'hillshade-dem',
+        layout: {},
+        paint: {},
+      });
+    }
+  });
   map.addControl(
     new maplibregl.NavigationControl({ visualizePitch: true }),
     'top-left',
@@ -245,16 +191,6 @@ const GRADIENT_DARK = [
   1,    '#fc4c02',
 ];
 
-// Track gradient for light background (no white — deep orange → red)
-const GRADIENT_LIGHT = [
-  'interpolate', ['linear'], ['line-progress'],
-  0,    '#c0392b',
-  0.25, '#e74c3c',
-  0.5,  '#fc4c02',
-  0.75, '#e74c3c',
-  1,    '#c0392b',
-];
-
 /** Remove any previously rendered GPX layers/sources. */
 function clearOldTrack(map) {
   LAYERS.forEach((id) => { if (map.getLayer(id)) map.removeLayer(id); });
@@ -266,7 +202,7 @@ function clearOldTrack(map) {
  * @param {maplibregl.Map} map
  * @param {[number, number, number][]} coords
  */
-export function renderTrack(map, coords) {
+export function renderTrack(map, coords, { fit = true } = {}) {
   clearOldTrack(map);
 
   map.addSource(SOURCE_LINE, {
@@ -313,7 +249,7 @@ export function renderTrack(map, coords) {
     layout: { 'line-join': 'round', 'line-cap': 'round' },
     paint: {
       'line-width': 4,
-      'line-gradient': _currentTheme === 'light' ? GRADIENT_LIGHT : GRADIENT_DARK,
+      'line-gradient': GRADIENT_DARK,
       'line-opacity': 0.95,
     },
   });
@@ -347,6 +283,7 @@ export function renderTrack(map, coords) {
   });
 
   // Fit the full bounding box. pitch:0 + generous padding = whole route always visible.
+  if (!fit) return;
   const lons = coords.map((c) => c[0]);
   const lats = coords.map((c) => c[1]);
   const bounds = [
