@@ -121,7 +121,7 @@ export function createMap(containerId) {
   map.once('style.load', () => {
     _applyChineseLabels(map);
 
-    // --- Terrain DEM source ---
+    // --- Terrain DEM source (shared by terrain and hillshade) ---
     map.addSource('terrain-dem', {
       type: 'raster-dem',
       url: 'https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=' + MAPTILER_API_KEY,
@@ -130,15 +130,6 @@ export function createMap(containerId) {
       attribution: '\u00a9 MapTiler',
     });
     map.setTerrain({ source: 'terrain-dem', exaggeration: 1.0 });
-
-    // --- Hillshade DEM source ---
-    map.addSource('hillshade-dem', {
-      type: 'raster-dem',
-      url: 'https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=' + MAPTILER_API_KEY,
-      tileSize: 256,
-      maxzoom: 13,
-      attribution: '\u00a9 MapTiler',
-    });
 
 
     // 添加 satellite source 和 layer（只添加一次）
@@ -153,8 +144,13 @@ export function createMap(containerId) {
     }
     if (!map.getLayer('satellite-layer')) {
       map.addLayer({ id: 'satellite-layer', type: 'raster', source: 'maptiler-satellite',
-        // fade-duration:0 — tiles appear instantly, eliminating mid-animation flicker.
-        paint: { 'raster-opacity': 0, 'raster-fade-duration': 0 } });
+        // fade-duration:0 — individual tiles appear instantly, no per-tile fade.
+        // opacity-transition — smooth crossfade when toggling the whole layer.
+        paint: {
+          'raster-opacity': 0,
+          'raster-fade-duration': 0,
+          'raster-opacity-transition': { duration: 600, delay: 0 },
+        } });
     }
 
     // 添加 hillshade 图层（不指定 before，默认加到最上层）
@@ -162,7 +158,7 @@ export function createMap(containerId) {
       map.addLayer({
         id: 'custom-hillshade',
         type: 'hillshade',
-        source: 'hillshade-dem',
+        source: 'terrain-dem',
         layout: {},
         paint: {},
       });

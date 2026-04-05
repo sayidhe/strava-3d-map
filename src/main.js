@@ -133,9 +133,6 @@ followBtn?.addEventListener('click', () => {
 mapStyleBtn?.addEventListener('click', () => {
   const next = toggleMapStyle(map);
   mapStyleBtn.textContent = next === 'outdoor' ? '🛰 卫星' : '🏔 户外';
-  // When switching to satellite, satellite tiles at playback zoom may not be
-  // cached yet. Trigger a preload immediately so first playback is smooth.
-  if (next === 'satellite') preloadPlaybackTiles();
 });
 
 // When the user manually drags the map, turn off follow-cam so playback
@@ -208,71 +205,6 @@ window.addEventListener('flyover:ended', (e) => {
   );
 });
 
-// ───────────────────────────────────────────────
-//  Tile preloader — invisible two-frame jumpTo at playback zoom/pitch so
-//  MapLibre enqueues tile fetches before the user hits play.
-// ───────────────────────────────────────────────
-function preloadPlaybackTiles() {
-  if (!flyover || flyover.playing || flyover.progress > 0) return;
-  if (!activeCoords) return;
-  // Try to warm satellite tiles even when user is currently in outdoor mode.
-  // Satellite is a raster layer; if tiles "pop" in, it appears as flicker.
-  if (!map.getLayer('satellite-layer')) return;
-
-  const sv = {
-    center:  map.getCenter(),
-    zoom:    map.getZoom(),
-    bearing: map.getBearing(),
-    pitch:   map.getPitch(),
-  };
-
-  const prevOpacity = (() => {
-    try { return map.getPaintProperty('satellite-layer', 'raster-opacity'); } catch { return 0; }
-  })();
-  const prevFade = (() => {
-    try { return map.getPaintProperty('satellite-layer', 'raster-fade-duration'); } catch { return 350; }
-  })();
-
-  // If satellite is currently off (opacity=0), lift it a tiny bit so MapLibre still considers the layer.
-  // Keep it low enough to avoid noticeable flashing during the prewarm.
-  const prevOpacityNum = (typeof prevOpacity === 'number') ? prevOpacity : Number(prevOpacity);
-  const targetOpacity = Number.isFinite(prevOpacityNum) && prevOpacityNum > 0 ? prevOpacityNum : 0.01;
-
-  map.setPaintProperty('satellite-layer', 'raster-opacity', targetOpacity);
-  map.setPaintProperty('satellite-layer', 'raster-fade-duration', 0); // prewarm quickly; fade only matters for display.
-
-  const n = activeCoords.length;
-  const idxs = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.floor((n - 1) * f));
-  const uniqIdxs = Array.from(new Set(idxs));
-
-  const zoom = flyover.zoom;
-  const pitch = 55; // match follow-cam
-  const bearing = 0;
-
-  // Jump across several gpx segments so satellite tiles are queued across the route area.
-  let i = 0;
-  const step = () => {
-    if (!flyover || flyover.playing) return; // stop if playback started
-    if (i >= uniqIdxs.length) {
-      // Restore original style params + view.
-      try {
-        map.setPaintProperty('satellite-layer', 'raster-opacity', prevOpacity);
-        map.setPaintProperty('satellite-layer', 'raster-fade-duration', prevFade);
-      } catch {
-        // ignore
-      }
-      map.jumpTo({ center: sv.center, zoom: sv.zoom, bearing: sv.bearing, pitch: sv.pitch });
-      return;
-    }
-
-    const idx = uniqIdxs[i++];
-    const c = activeCoords[idx].slice(0, 2);
-    map.jumpTo({ center: c, zoom, pitch, bearing });
-    requestAnimationFrame(step);
-  };
-
-  requestAnimationFrame(step);
-}
 
 // ───────────────────────────────────────────────
 //  Core: load a File → parse → render
@@ -312,9 +244,6 @@ function processFile(file) {
         flyover.followCam = followBtn?.classList.contains('active') ?? true;
         playerEl?.classList.add('visible');
 
-        // Preload tiles at playback zoom/pitch while the fitBounds overview
-        // animation runs. Delayed past the 1800 ms fitBounds duration.
-        setTimeout(() => preloadPlaybackTiles(), 2200);
       };
 
       if (map.isStyleLoaded()) go();
