@@ -6,7 +6,7 @@ import { buildStatsProfile, calcStats, statsAtProgress } from './stats.js';
 import { createMap, renderTrack, toggleMapStyle } from './map.js';
 import { drawElevation, updatePlayhead } from './elevation.js';
 import { showHUD, updateHUD, showLoader, hideLoader, hideDropOverlay } from './ui.js';
-import { Flyover } from './flyover.js';
+import { Flyover, prefetchFlyoverTerrain } from './flyover.js';
 
 /** Quintic smoothstep — matches flyover intro/outro feel. */
 function smoothCamEasing(t) {
@@ -15,6 +15,11 @@ function smoothCamEasing(t) {
 
 // ── Init map immediately (sits behind the drop overlay)
 const map = createMap('map');
+window.__map = map; // debug hook: __map.getCenter()/getZoom()/getPitch()/getBearing()/getPadding() from devtools console
+
+// Toggle to `true` to skip the drag-and-drop step and auto-load
+// gpx/example.gpx on startup — handy for quick local testing.
+const TESTING_MODE = false;
 
 /** Currently active Flyover instance (null when no track loaded). */
 let flyover = null;
@@ -135,12 +140,15 @@ mapStyleBtn?.addEventListener('click', () => {
   mapStyleBtn.textContent = next === 'outdoor' ? '🛰 卫星' : '🏔 户外';
 });
 
-// When the user manually drags the map, turn off follow-cam so playback
-// keeps the current view instead of snapping back to the track position.
+// When the user manually drags the map DURING playback, turn off follow-cam
+// so playback keeps the current view instead of snapping back to the track
+// position. A drag before playback starts shouldn't stick — otherwise the
+// next play() silently skips its fly-in cinematic (see play()'s followCam
+// check) and leaves the camera frozen at the dragged view.
 map.on('dragend', () => {
-  if (followBtn?.classList.contains('active')) {
+  if (flyover?.playing && followBtn?.classList.contains('active')) {
     followBtn.classList.remove('active');
-    if (flyover) flyover.followCam = false;
+    flyover.followCam = false;
   }
 });
 
@@ -207,8 +215,50 @@ window.addEventListener('flyover:ended', (e) => {
 
 
 // ───────────────────────────────────────────────
-//  Core: load a File → parse → render
+//  Core: parse GPX text → render
 // ───────────────────────────────────────────────
+function loadGPXText(gpxText) {
+  try {
+    const { name, coords } = parseGPX(gpxText);
+    const stats = calcStats(coords);
+    const statsProfile = buildStatsProfile(coords);
+
+    hideDropOverlay();
+
+    const go = async () => {
+      // Add the GPX layers without moving the camera yet, then warm up the
+      // flyover's close-up terrain tiles (invisible, loader still covering
+      // the screen) before the overview's own fitBounds animation plays.
+      renderTrack(map, coords, { fit: false });
+      await prefetchFlyoverTerrain(map, coords);
+      renderTrack(map, coords);
+
+      hideLoader();
+      showHUD(stats, name);
+      drawElevation(coords);
+
+      // Tear down any previous flyover and create a fresh one
+      clearRecordingCountdown();
+      setPlayIcon(false);
+      flyover?.destroy();
+      activeCoords = coords;
+      activeStatsProfile = statsProfile;
+      fullStats = stats;
+      flyover = new Flyover(map, coords);
+      window.__flyover = flyover; // debug hook, mirrors window.__map
+      flyover.followCam = followBtn?.classList.contains('active') ?? true;
+      playerEl?.classList.add('visible');
+    };
+
+    if (map.isStyleLoaded()) go();
+    else map.once('load', go);
+  } catch (err) {
+    console.error(err);
+    hideLoader();
+    alert('解析 GPX 失败：' + err.message);
+  }
+}
+
 function processFile(file) {
   if (!file?.name.toLowerCase().endsWith('.gpx')) {
     alert('请选择 .gpx 格式文件');
@@ -218,43 +268,7 @@ function processFile(file) {
   showLoader();
 
   const reader = new FileReader();
-
-  reader.onload = (e) => {
-    try {
-      const { name, coords } = parseGPX(/** @type {string} */ (e.target.result));
-      const stats = calcStats(coords);
-      const statsProfile = buildStatsProfile(coords);
-
-      hideDropOverlay();
-
-      const go = () => {
-        hideLoader();
-        renderTrack(map, coords);
-        showHUD(stats, name);
-        drawElevation(coords);
-
-        // Tear down any previous flyover and create a fresh one
-        clearRecordingCountdown();
-        setPlayIcon(false);
-        flyover?.destroy();
-        activeCoords = coords;
-        activeStatsProfile = statsProfile;
-        fullStats = stats;
-        flyover = new Flyover(map, coords);
-        flyover.followCam = followBtn?.classList.contains('active') ?? true;
-        playerEl?.classList.add('visible');
-
-      };
-
-      if (map.isStyleLoaded()) go();
-      else map.once('load', go);
-    } catch (err) {
-      console.error(err);
-      hideLoader();
-      alert('解析 GPX 失败：' + err.message);
-    }
-  };
-
+  reader.onload = (e) => loadGPXText(/** @type {string} */ (e.target.result));
   reader.readAsText(file, 'UTF-8');
 }
 
@@ -295,3 +309,17 @@ document.getElementById('reset-btn')?.addEventListener('click', () => {
   flyover?.destroy();
   location.reload();
 });
+
+// ───────────────────────────────────────────────
+//  Testing mode: auto-load gpx/example.gpx, skipping the drop step
+// ───────────────────────────────────────────────
+if (TESTING_MODE) {
+  showLoader();
+  fetch('/gpx/example.gpx')
+    .then((res) => res.text())
+    .then((text) => loadGPXText(text))
+    .catch((err) => {
+      console.error('Testing mode: failed to load gpx/example.gpx', err);
+      hideLoader();
+    });
+}

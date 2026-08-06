@@ -24,6 +24,11 @@
     <!-- Map -->
     <div id="map"></div>
 
+    <!-- Debug overlay: visual center reference + live camera readout.
+         Hidden by default — toggle DEBUG_HUD in src/flyover.js to show. -->
+    <div id="debug-centerline" style="display:none; position:fixed; left:0; right:0; top:50%; height:1px; background:rgba(255,0,0,0.6); pointer-events:none; z-index:9999;"></div>
+    <div id="debug-hud" style="display:none; position:fixed; top:8px; left:8px; z-index:9999; background:rgba(0,0,0,0.7); color:#0f0; font:11px/1.4 monospace; padding:6px 8px; white-space:pre; pointer-events:none;"></div>
+
     <!-- Track name -->
     <div id="track-name"></div>
 

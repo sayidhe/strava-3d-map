@@ -4,10 +4,35 @@
 // 1) fly-in to route vicinity (lower pitch / smaller offset),
 // 2) a short zoom-in / pitch-lift for a cinematic "push-in" feel.
 const CAM_PITCH    = 40;   // pitch in degrees (0 = top-down, 85 = horizon)
-const CAM_OFFSET_Y = 400;  // px: positive → track dot sits below canvas centre
-const ZOOMIN_PITCH = 55;   // pitch after zoom-in
-const ZOOMIN_OFFSET_Y = 660; // offsetY after zoom-in
-                            // (keeps the dot in the lower viewport, above the UI strip)
+const CAM_OFFSET_Y = -185; // px offset from canvas center (safe range: -250 ~ 250; + → dot lower)
+const ZOOMIN_PITCH = 50;   // pitch after zoom-in
+const ZOOMIN_OFFSET_Y = -100; // px offset after zoom-in   (safe range: -250 ~ 250)
+const FLY_ZOOM     = 14.8; // playback zoom level        (safe range: 11 ~ 16; higher = closer)
+
+// Toggle to `true` to show the on-screen debug overlay (centerline + live
+// camera/terrain readout) — useful for diagnosing camera-framing issues
+// without needing the devtools console. See index.html for the markup.
+const DEBUG_HUD = false;
+
+// MapLibre's `padding` camera option is sticky — it persists on the map's
+// transform across calls that don't specify it. The initial route overview
+// (renderTrack's fitBounds) sets an asymmetric padding to keep the route
+// clear of UI chrome; if the flyover's own easeTo() calls don't explicitly
+// override it, that leftover padding silently stacks on top of our own
+// `offset`, shifting the camera off-target. All flyover camera math below
+// pins padding to zero during playback and interpolates it explicitly on
+// the way in/out so the result is deterministic regardless of prior state.
+const ZERO_PADDING = { top: 0, bottom: 0, left: 0, right: 0 };
+
+function lerpPadding(from, to, t) {
+  return {
+    top:    lerp(from.top,    to.top,    t),
+    bottom: lerp(from.bottom, to.bottom, t),
+    left:   lerp(from.left,   to.left,   t),
+    right:  lerp(from.right,  to.right,  t),
+  };
+}
+
 const INTRO_MS     = 1400; // follow-cam transition duration (ms)
 const INTRO_MAX_MS = 2400;
 const OUTRO_MS        = 1400;
@@ -24,17 +49,6 @@ const OUTRO_FINAL_POS_FREEZE_MS = 600;
 const BASE_DURATION_MS = 75_000;
 const LOOK_AHEAD_FRAC  = 0.6;
 const TRAIL_MAX_PTS    = 800;
-
-/**
- * Compute flyover zoom from track length.
- * Targets ~13.5 for short hikes (~10 km), ~12.5 for 50 km, ~12.0 for 150 km.
- * Capped below 14 so the camera stays high enough above 3D terrain.
- */
-function flyZoom(totalDistM) {
-  const km = totalDistM / 1000;
-  const z = 14.5 - Math.log2(Math.max(1, km / 5)) * 0.5;
-  return Math.min(14, Math.max(11.5, z));
-}
 
 // ── Math helpers ──────────────────────────────────────
 
@@ -155,6 +169,55 @@ const L_TRAIL   = 'fly-trail';
 const L_HALO    = 'fly-halo';
 const L_HEAD    = 'fly-head';
 
+/**
+ * The route overview (fitBounds) shows the whole track at a low, zoomed-out
+ * level, so it only triggers loading of coarse terrain-DEM tiles. The
+ * flyover's close-up camera (FLY_ZOOM/ZOOMIN_PITCH) needs much finer DEM
+ * tiles for the same area, which otherwise only start loading once the
+ * flyover camera itself jumps there — meaning the first seconds of a fresh
+ * play() can read elevation from not-yet-decoded tiles (MapLibre returns a
+ * bogus deeply-negative value, per the Mapbox Terrain-RGB encoding, instead
+ * of `null`), throwing the whole 3D camera position off.
+ *
+ * This proactively jumps the camera to the intended fly-in view (triggering
+ * the correct tile requests), waits for the map to go idle, then restores
+ * whatever view was showing before. Call this once right after the route's
+ * overview renders, before the user can see it (e.g. while a loader is
+ * still covering the screen) and before constructing/playing a Flyover.
+ * @param {import('maplibre-gl').Map} map
+ * @param {[number, number, number][]} coords
+ * @returns {Promise<void>}
+ */
+export function prefetchFlyoverTerrain(map, coords) {
+  return new Promise((resolve) => {
+    const saved = {
+      center: map.getCenter(),
+      zoom: map.getZoom(),
+      pitch: map.getPitch(),
+      bearing: map.getBearing(),
+    };
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      map.jumpTo(saved);
+      resolve();
+    };
+    // 'idle' only fires on a busy→idle *transition* — if the needed tiles
+    // are already cached (e.g. re-testing the same route), the jump below
+    // may not trigger any new loading and 'idle' may never fire again.
+    // A bounded timeout guarantees this always resolves either way.
+    map.once('idle', finish);
+    setTimeout(finish, 2000);
+    map.jumpTo({
+      center: [coords[0][0], coords[0][1]],
+      zoom: FLY_ZOOM,
+      pitch: ZOOMIN_PITCH,
+      bearing: saved.bearing,
+    });
+  });
+}
+
 // ── Flyover class ─────────────────────────────────────
 
 export class Flyover {
@@ -170,7 +233,7 @@ export class Flyover {
     this.coords = coords;
     this.dists = buildCumDists(coords);
     this.totalDist = this.dists[this.dists.length - 1];
-    this.zoom = flyZoom(this.totalDist);
+    this.zoom = FLY_ZOOM;
     this._endPos = posAtDist(coords, this.dists, this.totalDist);
     const endBackDist = Math.max(0, this.totalDist - Math.min(OUTRO_BEAR_BACKTRACK_M, this.totalDist * 0.08));
     const endBackPos = posAtDist(coords, this.dists, endBackDist);
@@ -264,6 +327,36 @@ export class Flyover {
     } catch (_) { /* layers may not exist yet */ }
   }
 
+  // Live readout of the head dot's actual on-screen vertical position (as %
+  // of viewport height, 50% = dead center) alongside camera params — set
+  // DEBUG_HUD to true to show it, useful for diagnosing camera-framing
+  // issues without needing the devtools console.
+  _debugHud(dotLon, dotLat, phase) {
+    if (!DEBUG_HUD) return;
+    const el = document.getElementById('debug-hud');
+    const line = document.getElementById('debug-centerline');
+    if (!el) return;
+    el.style.display = 'block';
+    if (line) line.style.display = 'block';
+    const pt = this.map.project([dotLon, dotLat]);
+    const h = this.map.getContainer().clientHeight || window.innerHeight;
+    const pct = Math.round((pt.y / h) * 1000) / 10;
+    const pad = this.map.getPadding();
+    const center = this.map.getCenter();
+    const elev = this.map.queryTerrainElevation ? this.map.queryTerrainElevation([dotLon, dotLat]) : 'n/a';
+    const centerElev = this.map.queryTerrainElevation ? this.map.queryTerrainElevation([center.lng, center.lat]) : 'n/a';
+    el.textContent =
+      `phase: ${phase}\n` +
+      `dot screenY: ${pct}%  (50% = center)\n` +
+      `zoom: ${this.map.getZoom().toFixed(2)}  pitch: ${this.map.getPitch().toFixed(1)}\n` +
+      `bearing: ${this.map.getBearing().toFixed(1)}\n` +
+      `padding: t${pad.top} b${pad.bottom} l${pad.left} r${pad.right}\n` +
+      `dot elev: ${elev}\n` +
+      `camera-center elev: ${centerElev}\n` +
+      `dot lon/lat: ${dotLon.toFixed(5)}, ${dotLat.toFixed(5)}\n` +
+      `center lon/lat: ${center.lng.toFixed(5)}, ${center.lat.toFixed(5)}`;
+  }
+
   // ── Playback controls ────────────────────────────────
 
   play() {
@@ -313,6 +406,7 @@ export class Flyover {
         fromBearing: this.map.getBearing(),
         fromPitch:   this.map.getPitch(),
         fromZoom:    this.map.getZoom(),
+        fromPadding: this.map.getPadding(),
       };
     }
 
@@ -333,6 +427,7 @@ export class Flyover {
         toBearing:   introSnapshot.fromBearing,
         toPitch:     introSnapshot.fromPitch,
         toZoom:      introSnapshot.fromZoom,
+        toPadding:   introSnapshot.fromPadding,
         durationMs:  introDurationMs(introSnapshot.fromBearing, this._bearing),
       };
     } else {
@@ -354,6 +449,13 @@ export class Flyover {
    * _tick(), so the final camera state is guaranteed bit-identical.
    */
   snapToFollow() {
+    if (this.playing && this._startTime === null) {
+      // Still inside the opening intro/zoom-in cinematic (_tick's own
+      // fly-in), which is already driving the camera toward the follow
+      // position. Injecting an _intro here would clobber the toPitch/
+      // toOffsetY fields that phase relies on, producing NaN camera params.
+      return;
+    }
     this.map.stop();
     // Sample the geographic point at the offset screen position so that
     // Target offset stays at follow value for the whole transition.
@@ -364,11 +466,12 @@ export class Flyover {
     const fromBearing = this.map.getBearing();
     const fromPitch   = this.map.getPitch();
     const fromZoom    = this.map.getZoom();
+    const fromPadding = this.map.getPadding();
 
     if (this.playing) {
       // _tick is running — inject an intro and let _tick animate it.
       this._intro = {
-        fromLon, fromLat, fromBearing, fromPitch, fromZoom,
+        fromLon, fromLat, fromBearing, fromPitch, fromZoom, fromPadding,
         durationMs: introDurationMs(fromBearing, this._bearing),
         startedAt:  performance.now(),
       };
@@ -389,6 +492,7 @@ export class Flyover {
         pitch:   fromPitch + (ZOOMIN_PITCH - fromPitch) * t,
         zoom:    fromZoom  + (this.zoom  - fromZoom)  * t,
         offset:  [0, ZOOMIN_OFFSET_Y * t],
+        padding: lerpPadding(fromPadding, ZERO_PADDING, t),
         duration: 0,
       });
       if (t0 < 1) requestAnimationFrame(animate);
@@ -449,12 +553,14 @@ export class Flyover {
         const t0 = Math.min((now - this._outro.startedAt) / this._outro.durationMs, 1);
         // clamp t0 to 1 so we always render the exact final frame before finishing
         const t = smoothstep(t0);
-        const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, toLon, toLat, toBearing, toPitch, toZoom } = this._outro;
+        const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, toLon, toLat, toBearing, toPitch, toZoom, toPadding } = this._outro;
         const bDiff = shortestAngleDelta(fromBearing, toBearing);
         // Use easeTo({duration:0}) so offset is honoured — jumpTo silently
         // ignores the offset option in MapLibre.
         // Ramp offset from ZOOMIN_OFFSET_Y → 0 during outro so the return
-        // to overview is continuous (overview has no offset applied).
+        // to overview is continuous (overview has no offset applied), and
+        // ramp padding from 0 back to whatever padding was active before
+        // play() started (e.g. the route-overview padding).
         this.map.easeTo({
           center:   [fromLon + (toLon - fromLon) * t,
                      fromLat + (toLat - fromLat) * t],
@@ -462,6 +568,7 @@ export class Flyover {
           pitch:    fromPitch + (toPitch - fromPitch) * t,
           zoom:     fromZoom  + (toZoom  - fromZoom)  * t,
           offset:   [0, ZOOMIN_OFFSET_Y * (1 - t)],
+          padding:  lerpPadding(ZERO_PADDING, toPadding ?? ZERO_PADDING, t),
           duration: 0,
         });
         if (t0 < 1) {
@@ -488,17 +595,21 @@ export class Flyover {
         // Use ease-in so we *arrive* with non-zero velocity, avoiding a pause
         // before the following zoom-in stage.
         const tCam = easeInCubic(Math.min(t0, 1));
-        const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, toPitch, toOffsetY } = this._intro;
+        const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, toPitch, toOffsetY, fromPadding } = this._intro;
         const bDiff = shortestAngleDelta(fromBearing, this._bearing);
-        this.map.easeTo({
-          center:   [fromLon + (this._camLon - fromLon) * tPos,
-                     fromLat + (this._camLat - fromLat) * tPos],
-          bearing:  (fromBearing + bDiff * tPos + 360) % 360,
-          pitch:    fromPitch + (toPitch - fromPitch) * tCam,
-          zoom:     fromZoom  + (this.zoom  - fromZoom)  * tPos,
-          offset:   [0, toOffsetY * tCam],
-          duration: 0,
-        });
+        if (this.followCam) {
+          this.map.easeTo({
+            center:   [fromLon + (this._camLon - fromLon) * tPos,
+                       fromLat + (this._camLat - fromLat) * tPos],
+            bearing:  (fromBearing + bDiff * tPos + 360) % 360,
+            pitch:    fromPitch + (toPitch - fromPitch) * tCam,
+            zoom:     fromZoom  + (this.zoom  - fromZoom)  * tPos,
+            offset:   [0, toOffsetY * tCam],
+            padding:  fromPadding ? lerpPadding(fromPadding, ZERO_PADDING, tCam) : ZERO_PADDING,
+            duration: 0,
+          });
+          this._debugHud(this.coords[0][0], this.coords[0][1], 'intro');
+        }
         if (t0 < 1) {
           this._raf = requestAnimationFrame(() => this._tick());
           return;
@@ -524,14 +635,18 @@ export class Flyover {
         const { fromPitch, toPitch, fromOffsetY, toOffsetY } = this._zoomIn;
         const curPitch = fromPitch + (toPitch - fromPitch) * t;
         const curOffsetY = fromOffsetY + (toOffsetY - fromOffsetY) * t;
-        this.map.easeTo({
-          center:  [this._camLon, this._camLat],
-          bearing: this._bearing,
-          pitch:   curPitch,
-          zoom:    this.zoom,
-          offset:  [0, curOffsetY],
-          duration: 0,
-        });
+        if (this.followCam) {
+          this.map.easeTo({
+            center:  [this._camLon, this._camLat],
+            bearing: this._bearing,
+            pitch:   curPitch,
+            zoom:    this.zoom,
+            offset:  [0, curOffsetY],
+            padding: ZERO_PADDING,
+            duration: 0,
+          });
+          this._debugHud(this.coords[0][0], this.coords[0][1], 'zoomIn');
+        }
         if (t0 < 1) {
           this._raf = requestAnimationFrame(() => this._tick());
           return;
@@ -618,9 +733,10 @@ export class Flyover {
     let pitch     = this._pitch;
     let zoom      = this.zoom;
     let offsetY   = this._offsetY;
+    let padding   = ZERO_PADDING;
 
     if (this._intro) {
-      const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, durationMs, startedAt } = this._intro;
+      const { fromLon, fromLat, fromBearing, fromPitch, fromZoom, durationMs, startedAt, fromPadding } = this._intro;
       const t0 = Math.min((now - startedAt) / durationMs, 1);
       const t  = smoothstep(t0); // smoothstep: zero velocity at both ends
 
@@ -633,12 +749,14 @@ export class Flyover {
       zoom      = fromZoom  + (this.zoom   - fromZoom)   * t;
       // offset stays constant — fromLon/fromLat was sampled at the offset
       // screen position so the track dot moves smoothly with no jump.
+      if (fromPadding) padding = lerpPadding(fromPadding, ZERO_PADDING, t);
 
       if (t0 >= 1) this._intro = null;
     }
 
     if (this.followCam) {
-      this.map.easeTo({ center: [centerLon, centerLat], bearing, pitch, zoom, offset: [0, offsetY], duration: 0 });
+      this.map.easeTo({ center: [centerLon, centerLat], bearing, pitch, zoom, offset: [0, offsetY], padding, duration: 0 });
+      this._debugHud(pos.lon, pos.lat, 'steady');
     }
 
     // Head dot updated every frame for smooth movement.
@@ -681,6 +799,7 @@ export class Flyover {
         toBearing:   returnView ? returnView.toBearing : 0,
         toPitch:     returnView ? returnView.toPitch : 0,
         toZoom:      returnView ? returnView.toZoom : this.zoom,
+        toPadding:   returnView ? returnView.toPadding : ZERO_PADDING,
         durationMs:  outroMs,
         startedAt:   performance.now(),
       };

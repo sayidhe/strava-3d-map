@@ -46,6 +46,30 @@ function _applyChineseLabels(map) {
   });
 }
 
+// Matches the muted gray already used by the basemap's Path/Track/Other-trails layers.
+const MUTED_TRAIL_GRAY = 'hsl(24, 10%, 60%)';
+
+/**
+ * Mute the outdoor style's default red-colored trail layers (waymarked "Red trail"
+ * and "Longdistance trail" + its outline/labels) so they don't compete visually
+ * with the user's own GPX track.
+ */
+function _muteRedTrails(map) {
+  if (map.getLayer('Red trail')) {
+    map.setPaintProperty('Red trail', 'line-color', MUTED_TRAIL_GRAY);
+  }
+  if (map.getLayer('Longdistance trail')) {
+    map.setPaintProperty('Longdistance trail', 'line-color', MUTED_TRAIL_GRAY);
+  }
+  if (map.getLayer('Longdistance trail outline')) {
+    map.setPaintProperty('Longdistance trail outline', 'line-color', 'hsla(0, 0%, 100%, 0.6)');
+  }
+  if (map.getLayer('Longdistance trail labels')) {
+    map.setPaintProperty('Longdistance trail labels', 'text-color', MUTED_TRAIL_GRAY);
+    map.setPaintProperty('Longdistance trail labels', 'icon-color', MUTED_TRAIL_GRAY);
+  }
+}
+
 /**
  * Toggle between outdoor and satellite map styles.
  * Satellite tiles are overlaid on the outdoor vector style — no setStyle() call,
@@ -120,6 +144,7 @@ export function createMap(containerId) {
 
   map.once('style.load', () => {
     _applyChineseLabels(map);
+    _muteRedTrails(map);
 
     // --- Terrain DEM source (shared by terrain and hillshade) ---
     map.addSource('terrain-dem', {
